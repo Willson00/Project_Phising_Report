@@ -1,0 +1,209 @@
+# -*- coding: utf-8 -*-
+import imaplib
+import email
+from email.header import decode_header
+import os
+import re
+import requests
+from datetime import datetime
+
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
+
+# ==============================================================================
+# CONFIGURATION MANAGEMENT (Kredensial Email & Telegram)
+# ==============================================================================
+GMAIL_AKUN      = "lalabolo425@gmail.com"
+GMAIL_APP_PASS  = "gwihxiqhtnnrbnsj"
+
+OUTLOOK_AKUN     = "lalabolo425@outlook.com"
+OUTLOOK_APP_PASS = "ksuueatrktzkeqtv" 
+
+TELEGRAM_TOKEN   = "8952297230:AAFOES4Sz0xvbJnxQID5yhAHthOmKcEhCOU" 
+TELEGRAM_USER_ID = "7593240328"  # <--- GANTI INI DENGAN ID ANGKA TELEGRAM ANDA
+# ==============================================================================
+
+def analisis_risiko_phishing(sender, subject, body):
+    skor_bahaya = 0
+    indikator_temuan = []
+    
+    kata_kunci_bahaya = [
+        'urgent', 'penting', 'alert', 'blokir', 'ditangguhkan', 
+        'verify', 'konfirmasi', 'hadiah', 'uang tunai', 'pulihkan',
+        'suspend', 'action required', 'login', 'kuesioner', 'undian'
+    ]
+    teks_gabungan = (subject + " " + body).lower()
+    kata_ditemukan = [kata for kata in kata_kunci_bahaya if kata in teks_gabungan]
+    if kata_ditemukan:
+        skor_bahaya += len(kata_ditemukan) * 2
+        indikator_temuan.append(f"Terdeteksi kata kunci mencurigakan: {', '.join(kata_ditemukan)}")
+
+    sender_lower = sender.lower()
+    if any(k in teks_gabungan for k in ["security", "admin", "alert"]):
+        if any(dom in sender_lower for dom in ["@gmail.com", "@yahoo.com", "@hotmail.com"]):
+            skor_bahaya += 5
+            indikator_temuan.append("Email sistem resmi menggunakan domain publik gratisan (Indikasi Spoofing/Fake Sender)")
+
+    urls = re.findall(r'https?://[^\s]+', body)
+    if urls:
+        skor_bahaya += 3
+        indikator_temuan.append(f"Ditemukan {len(urls)} tautan eksternal di dalam body email")
+        for url in urls:
+            if any(pndk in url for pndk in ["bit.ly", "tinyurl.com", "t.co", "goo.gl"]):
+                skor_bahaya += 5
+                indikator_temuan.append("Terdeteksi penggunaan tautan yang dipendekkan (Obfuscation Link)")
+
+    if skor_bahaya >= 8:
+        level_risiko = "TINGGI (Sangat Terindikasi Serangan Phishing)"
+        warna_teks = "red"
+    elif 4 <= skor_bahaya < 8:
+        level_risiko = "WASPADA (Indikasi Rekayasa Sosial Sedang)"
+        warna_teks = "orange"
+    else:
+        level_risiko = "RENDAH (Email Cenderung Aman / Normal)"
+        warna_teks = "green"
+        
+    return level_risiko, warna_teks, indikator_temuan
+
+def kirim_pdf_ke_telegram(lokasi_file):
+    print(f"\n[*] Mengirim berkas bundel {os.path.basename(lokasi_file)} ke Telegram...")
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
+    try:
+        with open(lokasi_file, "rb") as dokumen:
+            payload = {
+                "chat_id": TELEGRAM_USER_ID,
+                "caption": f"🚨 [DUAL-ENGINE] Analisis Tingkat Risiko Phishing untuk Gmail & Outlook Selesai Dievaluasi!"
+            }
+            files = {"document": dokumen}
+            respons = requests.post(url, data=payload, files=files)
+            if respons.status_code == 200:
+                print("[+] Sukses: Berkas PDF Analisis Lintas Platform terkirim ke Telegram Anda!")
+            else:
+                print(f"[-] Gagal mengirim ke Telegram. Kode Status: {respons.status_code}")
+    except Exception as e:
+        print(f"[-] Eror saat berkomunikasi dengan API Telegram: {str(e)}")
+
+def buat_laporan_pdf_bundel(daftar_email):
+    file_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    pdf_filename = f"Bundel_Analisis_Dual_Platform_{file_timestamp}.pdf"
+    
+    doc = SimpleDocTemplate(pdf_filename, pagesize=letter)
+    story = []
+    styles = getSampleStyleSheet()
+    
+    main_title_style = ParagraphStyle('MainTitle', parent=styles['Heading1'], fontSize=14, textColor=colors.HexColor("#1A252C"), spaceAfter=15, alignment=1)
+    email_header_style = ParagraphStyle('EmailHeader', parent=styles['Heading2'], fontSize=11, textColor=colors.HexColor("#2C3E50"), spaceBefore=10, spaceAfter=4)
+    meta_style = ParagraphStyle('MetaStyle', parent=styles['Normal'], fontSize=9, spaceAfter=4)
+    body_style = ParagraphStyle('BodyStyle', parent=styles['Normal'], fontSize=8.5, leading=12)
+    
+    story.append(Paragraph("LAPORAN INTELLIGENCE: DETEKSI OTOMATIS GMAIL & OUTLOOK", main_title_style))
+    story.append(Paragraph(f"<b>Tanggal Evaluasi:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", meta_style))
+    story.append(Paragraph(f"<b>Total Sampel:</b> {len(daftar_email)} Email Teranalisis", meta_style))
+    story.append(Spacer(1, 10))
+    
+    for index, data in enumerate(daftar_email, 1):
+        story.append(Paragraph("------------------------------------------------------------------------------------------------------------------------", meta_style))
+        story.append(Paragraph(f"<b>[SAMPEL #{index}] PLATFORM: {data['platform'].upper()}</b>", email_header_style))
+        story.append(Paragraph("------------------------------------------------------------------------------------------------------------------------", meta_style))
+        story.append(Paragraph(f"<b>Waktu Masuk:</b> {data['date']}", meta_style))
+        story.append(Paragraph(f"<b>Subjek / Judul:</b> {data['subject']}", meta_style))
+        story.append(Paragraph(f"<b>Entitas Pengirim:</b> {data['sender']}", meta_style))
+        story.append(Paragraph(f"<b>Status Analisis Ancaman:</b> <font color='{data['warna']}'><b>{data['risk_level']}</b></font>", meta_style))
+        
+        story.append(Paragraph("<b>Indikator Kecurigaan Terdeteksi:</b>", styles['Heading4']))
+        if data['temuan']:
+            for tmn in data['temuan']:
+                story.append(Paragraph(f"• {tmn}", meta_style))
+        else:
+            story.append(Paragraph("• Tidak ada indikator rekayasa sosial makro yang mencolok.", meta_style))
+            
+        story.append(Spacer(1, 5))
+=        story.append(Paragraph("<b>KONTEN / ISI PESAN EMAIL MENTAH:</b>", styles['Heading4']))
+        clean_body = data['body'].replace('\n', '<br/>')
+        story.append(Paragraph(clean_body, body_style))
+        story.append(Spacer(1, 15))
+        
+    doc.build(story)
+    print(f"[+] 1 Berkas PDF Bundel Berhasil Dibuat Lokal: {pdf_filename}")
+    kirim_pdf_ke_telegram(pdf_filename)
+
+def ambil_data_email(server_host, akun, password, nama_platform):
+    hasil_ekstraksi = []
+    try:
+        print(f"[*] Menghubungkan ke server IMAP {nama_platform}...")
+        mail = imaplib.IMAP4_SSL(server_host)
+        mail.login(akun, password)
+        mail.select("inbox")
+        
+        status, messages = mail.search(None, 'ALL')
+        email_ids = messages[0].split()
+        if not email_ids:
+            print(f"[-] Kotak masuk {nama_platform} kosong.")
+            mail.logout()
+            return hasil_ekstraksi
+            
+        email_ids = email_ids[-5:]
+        email_ids.reverse() 
+        
+        for e_id in email_ids:
+            res, msg_data = mail.fetch(e_id, "(RFC822)")
+            for response_part in msg_data:
+                if isinstance(response_part, tuple):
+                    msg = email.message_from_bytes(response_part[1])
+                    subject, encoding = decode_header(msg["Subject"])[0]
+                    if isinstance(subject, bytes):
+                        subject = subject.decode(encoding or "utf-8")
+                    sender = msg.get("From")
+                    date = msg.get("Date")
+                    
+                    body = ""
+                    if msg.is_multipart():
+                        for part in msg.walk():
+                            if part.get_content_type() == "text/plain":
+                                body = part.get_payload(decode=True).decode("utf-8", errors="ignore")
+                                break
+                    else:
+                        body = msg.get_payload(decode=True).decode("utf-8", errors="ignore")
+                    
+                    risk_level, warna, temuan = analisis_risiko_phishing(sender, subject, body)
+                    print(f"[+] [{nama_platform.upper()}] Selesai Scan: {subject[:25]}... -> [{risk_level}]")
+                    
+                    hasil_ekstraksi.append({
+                        "platform": nama_platform, "subject": subject, "sender": sender,
+                        "date": date, "body": body, "risk_level": risk_level, "warna": warna, "temuan": temuan
+                    })
+        mail.logout()
+    except Exception as e:
+        print(f"[-] Gagal memproses kotak masuk {nama_platform}: {str(e)}")
+    return hasil_ekstraksi
+
+def jalankan_dual_engine():
+    wadah_seluruh_email = []
+    
+    # Engine 1: Ambil data dari Gmail
+    data_gmail = ambil_data_email("imap.gmail.com", GMAIL_AKUN, GMAIL_APP_PASS, "Gmail")
+    wadah_seluruh_email.extend(data_gmail)
+    
+    print("-" * 60)
+    
+    # Engine 2: Ambil data dari Outlook
+    data_outlook = ambil_data_email("outlook.office365.com", OUTLOOK_AKUN, OUTLOOK_APP_PASS, "Outlook")
+    wadah_seluruh_email.extend(data_outlook)
+    
+    print("-" * 60)
+    
+    if wadah_seluruh_email:
+        buat_laporan_pdf_bundel(wadah_seluruh_email)
+    else:
+        print("[-] Tidak ada data email yang berhasil ditarik dari kedua platform.")
+
+if __name__ == "__main__":
+    print("=" * 60)
+    print("      AI ENGINE RUNNER: DUAL-ENGINE INTELLIGENT PHISHING COMPILER ")
+    print("=" * 60)
+    if TELEGRAM_USER_ID == "MASUKKAN_ID_ANGKA_ANDA":
+        print("[-] EROR: Mohon konfigurasikan TELEGRAM_USER_ID Anda terlebih dahulu!")
+    else:
+        jalankan_dual_engine()
