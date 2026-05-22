@@ -18,3 +18,4 @@ cd Project_Phising_Report
 Berikut adalah link video demonstrasi jalannya sistem Project Phising Report di Kali Linux:
 
 👉 [https://drive.google.com/drive/u/0/folders/1thA1QkUjHOVtLnDpk0GTgb5-KcBS8ZsL)
+Certif dan dokumentasi ada di link tersebut
